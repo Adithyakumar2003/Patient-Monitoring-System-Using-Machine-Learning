@@ -1,0 +1,114 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+import pygame
+import os
+
+# Initialize thresholds and counters
+movement_threshold = 7           # Movement sensitivity (pixel difference)
+alert_duration = 5               # Duration in seconds for continuous movement to trigger alert
+sudden_movement_threshold = 15   # Threshold for detecting sudden, intense movement
+start_time = None
+sudden_movement_time = None      # Timer for sudden movement
+
+# Initialize Mediapipe pose
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False, min_detection_confidence=0.5)
+mp_drawing = mp.solutions.drawing_utils
+
+# Initialize pygame mixer for sound
+pygame.mixer.init()
+
+# Define the path to the alert sound file
+alert_file = r"C:\Users\Admin\Desktop\siren-alert-96052.mp3"
+
+# Check if the sound file exists
+if os.path.exists(alert_file):
+    pygame.mixer.music.load(alert_file)
+else:
+    print(f"Sound file '{alert_file}' not found. Please check the path or provide the correct location.")
+    exit()
+
+# Start video capture
+cap = cv2.VideoCapture(0)
+
+# Store previous landmarks for movement tracking
+previous_landmarks = None
+box_color = (0, 255, 0)  # Initial color for the box (green)
+
+# Set the window to full-screen mode
+cv2.namedWindow("Frame", cv2.WINDOW_NORMAL)
+cv2.setWindowProperty("Frame", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Get body landmarks
+    results = pose.process(rgb_frame)
+    if results.pose_landmarks:
+        # Extract key body points for movement detection
+        key_points = [
+            results.pose_landmarks.landmark[i] for i in [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26]  # Head, shoulders, hands, knees, etc.
+        ]
+        
+        current_landmarks = [(int(pt.x * frame.shape[1]), int(pt.y * frame.shape[0])) for pt in key_points]
+
+        # Calculate bounding box for the body
+        x_coords = [pt[0] for pt in current_landmarks]
+        y_coords = [pt[1] for pt in current_landmarks]
+        x_min, x_max = min(x_coords), max(x_coords)
+        y_min, y_max = min(y_coords), max(y_coords)
+
+        if previous_landmarks:
+            # Calculate movement between frames
+            movement = sum(
+                np.linalg.norm(np.array(curr) - np.array(prev)) for curr, prev in zip(current_landmarks, previous_landmarks)
+            )
+
+            # Check for sudden movement
+            if movement > sudden_movement_threshold:
+                if sudden_movement_time is None:
+                    sudden_movement_time = time.time()
+                elif time.time() - sudden_movement_time >= alert_duration:
+                    cv2.putText(frame, "ALERT! Prolonged Sudden Movement Detected!", 
+                                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    if not pygame.mixer.music.get_busy():
+                        pygame.mixer.music.play()
+                box_color = (0, 0, 255)  # Red for sudden movement alert
+            else:
+                sudden_movement_time = None  # Reset sudden movement timer if movement is low
+
+            # Check for continuous movement
+            if movement > movement_threshold:
+                if start_time is None:
+                    start_time = time.time()
+                elif time.time() - start_time >= alert_duration:
+                    cv2.putText(frame, "ALERT! Continuous Movement Detected!", 
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    if not pygame.mixer.music.get_busy():
+                        pygame.mixer.music.play()
+                box_color = (0, 0, 255)
+            else:
+                start_time = None
+                box_color = (0, 255, 0)  # Green for no significant movement
+                pygame.mixer.music.stop()  # Stop sound if movement is below threshold
+        # Update previous landmarks
+        previous_landmarks = current_landmarks
+
+        # Draw bounding box around body
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), box_color, 2)
+
+    # Show the output frame
+    cv2.imshow("Frame", frame)
+    
+    # Exit on pressing the Esc key
+    if cv2.waitKey(1) & 0xFF == 27:  # 27 is the ASCII code for the Esc key
+        break
+
+cap.release()
+cv2.destroyAllWindows()
